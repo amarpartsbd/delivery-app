@@ -1,6 +1,10 @@
 name: Build Delivery App
+run-name: build-${{ github.event.client_payload.build_id }}
 
-# Triggered by the ERP via repository_dispatch (AppBuildService).
+# Triggered by the ERP via repository_dispatch (AppBuildService). The runner only
+# talks to GitHub — it builds a signed APK and stores it as an artifact. The ERP
+# then pulls the artifact (VPS → GitHub), so no runner → VPS network path is ever
+# needed (that path is unreliable from some runner IPs).
 on:
   repository_dispatch:
     types: [build-delivery-app]
@@ -9,7 +13,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      BUILD_ID: ${{ github.event.client_payload.build_id }}
       APP_NAME: ${{ github.event.client_payload.app_name }}
       PACKAGE_ID: ${{ github.event.client_payload.package_id }}
       API_URL: ${{ github.event.client_payload.api_url }}
@@ -17,8 +20,6 @@ jobs:
       ICON_URL: ${{ github.event.client_payload.icon_url }}
       VERSION_NAME: ${{ github.event.client_payload.version_name }}
       VERSION_CODE: ${{ github.event.client_payload.version_code }}
-      CALLBACK_URL: ${{ github.event.client_payload.callback_url }}
-      CALLBACK_SECRET: ${{ secrets.APPBUILD_CALLBACK_SECRET }}
     steps:
       - uses: actions/checkout@v4
 
@@ -31,14 +32,6 @@ jobs:
         with:
           channel: stable
 
-      # Notify ERP that the build started.
-      - name: Callback → building
-        run: |
-          BODY="{\"build_id\":${BUILD_ID},\"status\":\"building\",\"log_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-          SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$CALLBACK_SECRET" | sed 's/^.* //')
-          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Signature: $SIG" --data "$BODY" || true
-
-      # Release keystore from secrets.
       - name: Write keystore
         run: |
           echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/upload-keystore.jks
@@ -57,28 +50,10 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
-      # Upload the signed APK to the ERP over HTTPS (multipart) — reliable from
-      # GitHub runners (port 443), no SSH. The endpoint saves it, marks the build
-      # ready, sets the download link and prunes old APKs. Retries for transients.
-      - name: Upload APK to ERP
-        run: |
-          UPLOAD_URL="${CALLBACK_URL%/callback}/upload"
-          SIG=$(printf '%s' "${BUILD_ID}:${VERSION_CODE}" | openssl dgst -sha256 -hmac "$CALLBACK_SECRET" | sed 's/^.* //')
-          n=0
-          until [ "$n" -ge 4 ]; do
-            code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 300 -X POST "$UPLOAD_URL" \
-              -H "X-Signature: $SIG" \
-              -F "build_id=${BUILD_ID}" \
-              -F "version_code=${VERSION_CODE}" \
-              -F "apk=@build/app/outputs/flutter-apk/app-release.apk" || echo 000)
-            if [ "$code" = "200" ]; then echo "→ uploaded (HTTP 200)"; cat /tmp/up.json; break; fi
-            n=$((n+1)); echo "upload attempt $n failed (HTTP $code)"; cat /tmp/up.json 2>/dev/null || true; sleep "$((n*10))"
-          done
-          [ "$n" -ge 4 ] && { echo "upload failed after retries"; exit 1; } || true
-
-      - name: Callback → failed
-        if: failure()
-        run: |
-          BODY="{\"build_id\":${BUILD_ID},\"status\":\"failed\",\"error\":\"Build failed. See the workflow logs.\",\"log_url\":\"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"
-          SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$CALLBACK_SECRET" | sed 's/^.* //')
-          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Signature: $SIG" --data "$BODY" || true
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 2
+          if-no-files-found: error
