@@ -57,38 +57,24 @@ jobs:
       - name: Build APK
         run: flutter build apk --release
 
-      # Upload the signed APK to the ERP VPS over SSH (served publicly by nginx).
-      - name: Upload APK to VPS
-        id: upload
+      # Upload the signed APK to the ERP over HTTPS (multipart) — reliable from
+      # GitHub runners (port 443), no SSH. The endpoint saves it, marks the build
+      # ready, sets the download link and prunes old APKs. Retries for transients.
+      - name: Upload APK to ERP
         run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          FN="${PACKAGE_ID}-v${VERSION_CODE}.apk"
-          DEST="${{ secrets.VPS_APK_PATH }}"
-          TARGET="${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}"
-          # -o Port= works for both ssh and scp; accept-new avoids a keyscan race
-          # under concurrent builds; retry with backoff for transient SSH failures.
-          OPTS="-i $HOME/.ssh/deploy_key -o Port=${VPS_PORT:-22} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=30 -o ServerAliveInterval=15"
+          UPLOAD_URL="${CALLBACK_URL%/callback}/upload"
+          SIG=$(printf '%s' "${BUILD_ID}:${VERSION_CODE}" | openssl dgst -sha256 -hmac "$CALLBACK_SECRET" | sed 's/^.* //')
           n=0
           until [ "$n" -ge 4 ]; do
-            if ssh $OPTS "$TARGET" "mkdir -p '$DEST'" \
-               && scp $OPTS build/app/outputs/flutter-apk/app-release.apk "$TARGET:${DEST}/${FN}"; then
-              echo "→ uploaded ${FN}"; break
-            fi
-            n=$((n+1)); echo "upload attempt $n failed; retrying in $((n*10))s…"; sleep "$((n*10))"
+            code=$(curl -sS -o /tmp/up.json -w '%{http_code}' --max-time 300 -X POST "$UPLOAD_URL" \
+              -H "X-Signature: $SIG" \
+              -F "build_id=${BUILD_ID}" \
+              -F "version_code=${VERSION_CODE}" \
+              -F "apk=@build/app/outputs/flutter-apk/app-release.apk" || echo 000)
+            if [ "$code" = "200" ]; then echo "→ uploaded (HTTP 200)"; cat /tmp/up.json; break; fi
+            n=$((n+1)); echo "upload attempt $n failed (HTTP $code)"; cat /tmp/up.json 2>/dev/null || true; sleep "$((n*10))"
           done
-          if [ "$n" -ge 4 ]; then echo "upload failed after retries"; exit 1; fi
-          echo "url=${{ secrets.VPS_PUBLIC_BASE }}/${FN}" >> "$GITHUB_OUTPUT"
-        env:
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-
-      - name: Callback → ready
-        if: success()
-        run: |
-          BODY="{\"build_id\":${BUILD_ID},\"status\":\"ready\",\"artifact_url\":\"${{ steps.upload.outputs.url }}\",\"version_code\":${VERSION_CODE}}"
-          SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$CALLBACK_SECRET" | sed 's/^.* //')
-          curl -s -X POST "$CALLBACK_URL" -H "Content-Type: application/json" -H "X-Signature: $SIG" --data "$BODY"
+          [ "$n" -ge 4 ] && { echo "upload failed after retries"; exit 1; } || true
 
       - name: Callback → failed
         if: failure()
