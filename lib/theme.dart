@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// ── Brand tokens ──────────────────────────────────────────────
 const kNavy = Color(0xFF0D1B3E); // Turn360 deep navy (hero/headers)
@@ -59,6 +60,11 @@ ThemeData buildTheme(Color brand) {
       elevation: 0,
       scrolledUnderElevation: 0,
       centerTitle: false,
+      systemOverlayStyle: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+      ),
       titleTextStyle: TextStyle(color: kInk, fontSize: 20, fontWeight: FontWeight.w800, letterSpacing: -0.3),
     ),
     cardTheme: CardThemeData(
