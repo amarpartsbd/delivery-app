@@ -104,7 +104,9 @@ ThemeData buildTheme(Color brand) {
       backgroundColor: Colors.white,
       selectedColor: brand,
       side: const BorderSide(color: kLine),
-      labelStyle: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+      labelStyle: const TextStyle(color: kInk, fontWeight: FontWeight.w600, fontSize: 13),
+      secondaryLabelStyle: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 13),
+      checkmarkColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(30)),
     ),
     navigationBarTheme: NavigationBarThemeData(
